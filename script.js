@@ -1,103 +1,85 @@
- 
-document.getElementById('generate-btn').addEventListener('click', generateOnionAddress);
+const ec = new elliptic.ec('ed25519');
 
-async function generateOnionAddress() {
-    const outputDiv = document.getElementById('output');
-
-    // Generate keys using SubtleCrypto (WebCrypto API)
-    const keyPair = await window.crypto.subtle.generateKey({
-        name: "RSA-OAEP",
-        modulusLength: 2048,
-        publicExponent: new Uint8Array([1, 0, 1]),
-        hash: "SHA-256",
-    }, true, ["encrypt", "decrypt"]);
-
-    // Export the public key
-    const publicKey = await window.crypto.subtle.exportKey('spki', keyPair.publicKey);
-    const publicKeyBuffer = new Uint8Array(publicKey);
-    
-    // Export the private key
-    const privateKey = await window.crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
-    const privateKeyBuffer = new Uint8Array(privateKey);
-    
-    // Generate onion address from public key
-    const onionAddress = await generateOnionAddressFromPublicKey(publicKeyBuffer);
-
-    // Convert keys to base64 for display
-    const publicKeyBase64 = arrayBufferToBase64(publicKey);
-    const privateKeyBase64 = arrayBufferToBase64(privateKey);
-
-    // Create a new div for this address set
-    const addressSetDiv = document.createElement('div');
-    addressSetDiv.className = 'address-set';
-
-    addressSetDiv.innerHTML = `
-        <div>Onion Address: <span>${onionAddress}</span></div>
-        <div>Public Key: <span>${publicKeyBase64}</span></div>
-        <div>Private Key: <span>${privateKeyBase64}</span></div>
-        <button class="copy-btn">Copy</button>
-    `;
-
-    // Add copy functionality
-    addressSetDiv.querySelector('.copy-btn').addEventListener('click', () => {
-        copyToClipboard(`Onion Address: ${onionAddress}\nPublic Key: ${publicKeyBase64}\nPrivate Key: ${privateKeyBase64}`);
-        alert('Copied to clipboard!');
-    });
-
-    // Add the new address set to the output div
-    outputDiv.appendChild(addressSetDiv);
+function generateKeypair() {
+    const key = ec.genKeyPair();
+    return {
+        privateKey: key.getPrivate('hex'),
+        publicKey: key.getPublic('hex')
+    };
 }
 
-async function generateOnionAddressFromPublicKey(publicKeyBuffer) {
-    const publicKeyHash = await crypto.subtle.digest("SHA-256", publicKeyBuffer);
-    const checksum = await crypto.subtle.digest("SHA-256", concatenateBuffers(new TextEncoder().encode(".onion checksum"), new Uint8Array(publicKeyHash), new Uint8Array([3])));
-    const onionAddress = base32Encode(concatenateBuffers(new Uint8Array(publicKeyHash), new Uint8Array(checksum.slice(0, 2)), new Uint8Array([3]))).toLowerCase();
-    return onionAddress;
+function getOnionAddress(publicKey) {
+    const pubBytes = hexToBytes(publicKey);
+    const checksum = ".onion checksum";
+    const version = new Uint8Array([0x03]);
+    const combined = new Uint8Array(pubBytes.length + checksum.length + version.length);
+    combined.set(pubBytes);
+    combined.set(new TextEncoder().encode(checksum), pubBytes.length);
+    combined.set(version, pubBytes.length + checksum.length);
+    return base32Encode(combined).toLowerCase().slice(0, 56);
 }
 
-function arrayBufferToBase64(buffer) {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
+function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
     }
-    return window.btoa(binary);
+    return bytes;
 }
 
-function concatenateBuffers(...buffers) {
-    let totalLength = 0;
-    for (const buffer of buffers) {
-        totalLength += buffer.byteLength;
+function base32Encode(input) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let output = '';
+    let bits = 0;
+    let value = 0;
+
+    for (let i = 0; i < input.length; i++) {
+        value = (value << 8) | input[i];
+        bits += 8;
+        while (bits >= 5) {
+            output += alphabet[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
     }
-    const concatenated = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const buffer of buffers) {
-        concatenated.set(new Uint8Array(buffer), offset);
-        offset += buffer.byteLength;
+    if (bits > 0) {
+        output += alphabet[(value << (5 - bits)) & 31];
     }
-    return concatenated.buffer;
+    return output;
 }
 
-function base32Encode(buffer) {
-    const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
-    let bits = '';
-    let base32 = '';
-    for (const byte of new Uint8Array(buffer)) {
-        bits += byte.toString(2).padStart(8, '0');
-    }
-    for (let i = 0; i < bits.length; i += 5) {
-        base32 += alphabet[parseInt(bits.slice(i, i + 5), 2)];
-    }
-    return base32;
-}
+function generateVanityAddress() {
+    const prefix = document.getElementById('prefix').value.toLowerCase();
+    const resultElement = document.getElementById('result');
+    resultElement.textContent = 'Generating... This may take a while.';
 
-function copyToClipboard(text) {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
+    const worker = new Worker(URL.createObjectURL(new Blob([`
+        ${generateKeypair.toString()}
+        ${getOnionAddress.toString()}
+        ${hexToBytes.toString()}
+        ${base32Encode.toString()}
+        
+        onmessage = function(e) {
+            const prefix = e.data;
+            while (true) {
+                const { privateKey, publicKey } = generateKeypair();
+                const address = getOnionAddress(publicKey);
+                if (address.startsWith(prefix)) {
+                    postMessage({ privateKey, publicKey, address });
+                    break;
+                }
+            }
+        };
+    `], {type: 'text/javascript'})));
+
+    worker.onmessage = function(e) {
+        const { privateKey, publicKey, address } = e.data;
+        resultElement.innerHTML = `
+            Found vanity address: ${address}<br><br>
+            Private key: ${privateKey}<br><br>
+            Public key: ${publicKey}
+        `;
+        worker.terminate();
+    };
+
+    worker.postMessage(prefix);
 }
- 
