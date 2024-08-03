@@ -1,16 +1,52 @@
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-	<title>Vanity Onion Address Generator</title>
-	<link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onion Address Generator</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-	<h1>Vanity Onion Address Generator</h1>
-	<input id="pattern" type="text" placeholder="Enter pattern or keyword">
-	<button id="generate-btn">Generate</button>
-	<div id="result"></div>
+    <h1>Onion Address Generator</h1>
+    <button onclick="generateOnionAddress()">Start</button>
+    <div id="results"></div>
+    <script src="crypto-js.js"></script>
+    <script src="elliptic.min.js"></script>
+    <script src="base32.js"></script>
+    <script>
+        function generateOnionAddress() {
+            const EC = require('elliptic').ec;
+            const ec = new EC('ed25519');
 
-	<script src="script.js"></script>
+            // Generate private key
+            const key = ec.genKeyPair();
+            const privateKey = key.getPrivate('hex');
+
+            // Generate public key
+            const publicKey = key.getPublic().encode('hex');
+
+            // Hash the public key using SHA3-256
+            const hash = CryptoJS.SHA3(publicKey, { outputLength: 256 }).toString(CryptoJS.enc.Hex);
+
+            // Take the first 80 bits (10 bytes)
+            const hash80bits = hash.substring(0, 20);
+
+            // Convert to base32
+            const base32 = require('hi-base32');
+            const onionAddress = base32.encode(Buffer.from(hash80bits, 'hex')).toLowerCase().replace(/=/g, '') + ".onion";
+
+            // Display results
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="container">
+                    <h2>New Address Generated</h2>
+                    <pre>Private Key: ${privateKey}</pre>
+                    <pre>Public Key: ${publicKey}</pre>
+                    <pre>Onion Address: ${onionAddress}</pre>
+                </div>
+            ` + resultsDiv.innerHTML;
+        }
+    </script>
+    <script src="script.js"></script>
 </body>
 </html>
